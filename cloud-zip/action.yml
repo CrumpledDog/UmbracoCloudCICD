@@ -1,0 +1,107 @@
+name: CrumpledUmbracoCloudZip
+description: 'Create a zip for deployment to Umbraco Cloud'
+
+inputs:
+  artifact-prefix:
+    description: 'A prefix used to identify your project'
+    required: true
+  path-to-frontend:
+    description: 'The path to your front end project that should be excluded from Umbraco Cloud source'
+    required: true
+  package-view-token:
+    description: 'A PAT to be used by Umbraco Cloud for accessing a private NuGet feed'
+    required: false
+  package-feed-url:
+    description: 'The NuGet Package Source URL for the private feed'
+    required: false    
+  slack_token:
+    description: 'Slack OAuth Token used for Health Check Notifications'
+    required: false    
+
+outputs:
+  artifact-name:
+    description: "Artifact Name"
+    value: ${{ inputs.artifact-prefix }}.cloudsource-${{ github.run_number }}
+
+runs:
+  using: "composite"
+  steps:     
+    - uses: actions/checkout@v4
+       
+    - name: Get DotNet Base Project Path
+      working-directory: ${{ github.Workspace }}
+      id: get-base-path
+      shell: bash
+      run: |
+          pathToBase=$(grep -oP 'base = "\K[^"]+' ${{ github.Workspace }}/.umbraco)
+          echo "PATH_TO_BASE=$pathToBase" >> $GITHUB_OUTPUT
+
+    - name: Download front end artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-prefix }}.frontend-${{ github.run_number }}
+        path: ${{ steps.get-base-path.outputs.PATH_TO_BASE }}
+
+    - name: Rename gitignore 
+      working-directory: ${{ steps.get-base-path.outputs.PATH_TO_BASE }}
+      shell: bash
+      run: |
+         echo "${{ steps.get-base-path.outputs.PATH_TO_BASE }}"
+         mv .gitignore .github_gitignore
+         mv .cloud_gitignore .gitignore
+
+    - name: Add private feed to NuGet.Config for Umbraco Cloud
+      shell: bash
+      if: |
+        inputs.package-view-token != '' &&
+        inputs.package-feed-url != ''
+      env:
+         package_view_token: ${{ inputs.package-view-token }}
+         package_feed_url: ${{ inputs.package-feed-url }}     
+         path_to_nuget_config: ${{ github.Workspace }}      
+      working-directory: ${{ github.action_path }}/scripts
+      run: |
+           npm i read-file
+           npm i write
+           npm i @xmldom/xmldom
+           npm i vkbeautify
+           node private_feeds.js
+           echo "Private feed added"
+
+    - name: Add healthcheck Slack token to appsettings.json
+      shell: bash
+      if: inputs.slack_token != '' 
+      env:
+       path_to_appsettings: ${{ github.Workspace }}/${{ steps.get-base-path.outputs.PATH_TO_BASE }}/appsettings.json
+       slack_token: ${{ inputs.slack_token }}
+      working-directory: ${{ github.action_path }}/scripts
+      run: |
+           npm i comment-json
+           node umbraco-healthcheck-token.js
+           echo "Slack token added"
+
+    - name: Zip Source Code
+      run: | 
+         CYAN='\033[0;36m'
+         GREEN='\033[0;32m'
+         NC='\033[0m' # No Color
+         zipOutput=$(zip -r ${{ inputs.artifact-prefix }}.cloudsource-${{ github.run_number }}.zip . -x ".git/*" ".github/*" "**/bin/*" "**/obj/*" "${{ inputs.path-to-frontend }}*")
+         mapfile -t lines_array <<< $zipOutput
+         if [ -n "$lines_array" ]; then
+           for i in "${!lines_array[@]}"; do 
+             if [ `expr $i % 2` == 0 ] 
+             then
+               echo -e "${CYAN}${lines_array[$i]}${NC}"
+             else
+               echo -e "${GREEN}${lines_array[$i]}${NC}"
+             fi
+           done
+         fi
+      shell: bash
+
+    - name: Create artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-prefix }}.cloudsource-${{ github.run_number }}
+        path: ${{ inputs.artifact-prefix }}.cloudsource-${{ github.run_number }}.zip
+        retention-days: 5

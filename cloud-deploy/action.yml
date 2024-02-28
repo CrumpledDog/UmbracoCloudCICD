@@ -1,0 +1,55 @@
+name: CrumpledUmbracoCloudDeploy
+description: 'Deploy to Umbraco Cloud from Github'
+
+inputs:
+  umbraco-cloud-project-id:
+    description: 'The ID for your Umbraco Cloud Project'
+    required: true
+  umbraco-cloud-api-key:
+    description: 'The API Key for your Umbraco Cloud Project'
+    required: true
+  path-to-zip:
+    description: 'Path to Zip of code to deploy to Umbraco Cloud'
+    required: true
+  git-username:
+    description: 'Username used for commiting changes from Umbraco Cloud'
+    required: true
+  git-email:
+    description: 'Email used for commiting changes from Umbraco Cloud'
+    required: true    
+runs:
+  using: "composite"
+  steps:     
+    - name: Create Deployment Meta
+      id: deployment-meta
+      working-directory: ${{ github.action_path }}
+      run: scripts/create_deployment.sh ${{ inputs.umbraco-cloud-project-id }} ${{ inputs.umbraco-cloud-api-key }} "Run number ${{github.run_number}}"
+      shell: bash
+     
+    - name: Post Zipped Artifact
+      id: post-zipped-artifact
+      working-directory: ${{ github.action_path }}
+      run: scripts/upload_package.sh ${{ inputs.umbraco-cloud-project-id }} ${{ steps.deployment-meta.outputs.DEPLOYMENT_ID }} ${{ inputs.umbraco-cloud-api-key }} $GITHUB_WORKSPACE/${{inputs.path-to-zip}}
+      shell: bash
+    
+    - name: Request Start Deployment
+      id: request-start-deployment
+      working-directory: ${{ github.action_path }}
+      run: scripts/start_deployment.sh ${{ inputs.umbraco-cloud-project-id }} ${{ steps.deployment-meta.outputs.DEPLOYMENT_ID }} ${{ inputs.umbraco-cloud-api-key }} ${{ steps.post-zipped-artifact.outputs.ARRAY_COUNT }}
+      shell: bash
+
+    - name: Wait for deployment completed
+      id: wait-for-deployment
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: scripts/get_deployment_status.sh ${{ inputs.umbraco-cloud-project-id }} ${{ steps.deployment-meta.outputs.DEPLOYMENT_ID }} ${{ inputs.umbraco-cloud-api-key }} ${{ steps.request-start-deployment.outputs.ARRAY_COUNT }}
+
+    - name: Checkout repo for Patching
+      uses: actions/checkout@v4
+      if: steps.wait-for-deployment.outputs.PATCH_REQUIRED == 'true'   
+
+    - name: Check for Git Patch File
+      working-directory: ${{ github.action_path }}
+      if: steps.wait-for-deployment.outputs.PATCH_REQUIRED == 'true'      
+      run: scripts/check_for_diff.sh ${{ inputs.umbraco-cloud-project-id }} ${{ inputs.umbraco-cloud-api-key }} ${{ github.Workspace }} ${{ github.action_path }} ${{ steps.wait-for-deployment.outputs.PATCH_REQUIRED }} "${{ steps.wait-for-deployment.outputs.CLOUD_UPGRADE_MESSAGE }}" ${{ inputs.git-username }} ${{ inputs.git-email}}
+      shell: bash 
